@@ -14,8 +14,8 @@ namespace Catalog.Service
         private readonly ICategoryRepository _categoryRepository;
         private readonly IProductRepository _productRepository;
         private readonly ILogger _logger;
-        private readonly string _invalidRecordsFile = "invalid_records.csv";
-        private readonly string _summaryReportFile = "import_summary.log";
+        private readonly string _invalidRecordsFile;
+        private readonly string _summaryReportFile;
 
         public CsvImportService(IDBTransactionManager dbTransactionManager, ICategoryRepository categoryRepository, IProductRepository productRepository, ILogger logger, IConfiguration configuration)
         {
@@ -41,63 +41,74 @@ namespace Catalog.Service
                 }
 
                 _logger.Information($"Starting CSV Import for file: {filePath}");
-                var validData = ReadAndValidateCsv(filePath!, out List<string> invalidRecords, errorSummary);
+                var (validData, invalidRecords) = await ReadAndValidateCsvAsync(filePath!, errorSummary);
 
-                if(await ValidateUniqueProductCodes(validData, errorSummary))
+                if(await CsvValidator.ValidateUniqueProductCodes(validData, _productRepository, errorSummary))
                 {
-                    await _dbTransactionManager.BeginTransactionAsync();
-
                     var newCategories = await GetNewCategoriesAsync(validData);
                     categoriesCount = newCategories.Count;
-                    await _categoryRepository.AddCategoriesAsync(newCategories);
-
+                    
                     var newProducts = GetProducts(validData);
                     productsCount = newProducts.Count;
-                    await _productRepository.AddProductsAsync(newProducts);
 
-                    await _categoryRepository.SaveChangesAsync();
-                    await _productRepository.SaveChangesAsync();
-
-                    await _dbTransactionManager.CommitTransactionAsync();
-
-                    _logger.Information($"CSV import completed successfully. Inserted {categoriesCount} new categories and {productsCount} new products");
+                    await InsertCSVData(newCategories, newProducts);
                 }
 
                 var summaryReport = GenerateSummaryReport(categoriesCount, productsCount, invalidRecords.Count, errorSummary);
+                DirectoryHelper.EnsureDirectoryExists(_summaryReportFile);
                 await File.WriteAllTextAsync(_summaryReportFile, summaryReport);
                 if (invalidRecords.Count != 0)
                 {
+                    DirectoryHelper.EnsureDirectoryExists(_invalidRecordsFile);
                     await File.WriteAllLinesAsync(_invalidRecordsFile, invalidRecords);
                 }
             }
             catch (Exception ex)
             {
-                await _dbTransactionManager.RollbackTransactionAsync();
                 _logger.Error($"Error occurred during CSV import: {ex.Message}");
             }
         }
 
-        private List<CsvRecord> ReadAndValidateCsv(string filePath, out List<string> invalidRecords, Dictionary<string, string> errorSummary)
+        private async Task InsertCSVData(List<Category> categories, List<Product> products) 
+        {
+            try
+            {
+                await _dbTransactionManager.BeginTransactionAsync();
+
+                await _categoryRepository.AddCategoriesAsync(categories);
+                await _productRepository.AddProductsAsync(products);
+
+                await _dbTransactionManager.CommitTransactionAsync();
+
+                _logger.Information($"CSV import completed successfully. Inserted {categories.Count} new categorie(s) and {products.Count} new product(s)");
+            }
+            catch (Exception ex)
+            {
+                await _dbTransactionManager.RollbackTransactionAsync();
+                _logger.Error($"Error occurred while inserting CSV data: {ex.Message}");
+            }
+        }
+        private async Task<(List<CsvRecord> validData, List<string> invalidRecords)> ReadAndValidateCsvAsync(string filePath, Dictionary<string, string> errorSummary)
         {
             var validData = new List<CsvRecord>();
-            invalidRecords = new List<string>();
+            var invalidRecords = new List<string>();
 
             using (var reader = new StreamReader(filePath))
             {
                 // Skip the first line (header)
-                reader.ReadLineAsync();
+                await reader.ReadLineAsync();
 
                 while (!reader.EndOfStream)
                 {
-                    string line = reader.ReadLine()!;
-                    var data = line.Split(',');
-                    if (data.Length != 4)
+                    string? line = await reader.ReadLineAsync();
+
+                    if (!CsvValidator.ValidateLine(line, out CsvRecord? record))
                     {
                         _logger.Warning($"Invalid line format: {line}");
                         invalidRecords.Add(line);
                         continue;
                     }
-                    validData.Add(new CsvRecord { ProductName = data[0].Trim(), ProductCode = data[1].Trim().ToUpper(), CategoryName = data[2].Trim(), CategoryCode = data[3].Trim().ToUpper() });
+                    validData.Add(record!);
                 }
             }
 
@@ -106,7 +117,7 @@ namespace Catalog.Service
                 errorSummary["Invalid Format"] = invalidRecords.Count.ToString();
             }
 
-            return validData;
+            return (validData, invalidRecords);
         }
 
         private async Task<List<Category>> GetNewCategoriesAsync(List<CsvRecord> validData)
@@ -127,37 +138,9 @@ namespace Catalog.Service
         private static List<Product> GetProducts(IEnumerable<CsvRecord> validData)
         {
             return validData
-                    .Select(x => new Product { Name = x.ProductName, Code = x.ProductCode, CreationDate = DateTime.UtcNow })
+                    .Select(x => new Product { Name = x.ProductName, Code = x.ProductCode, CategoryCode = x.CategoryCode, CreationDate = DateTime.UtcNow })
                     .DistinctBy(c => c.Code)
-                    .ToList();
-        }
-
-        private async Task<bool> ValidateUniqueProductCodes(IEnumerable<CsvRecord> records, Dictionary<string, string> errorSummary)
-        {
-            var isUnique = true;
-            var productCodesFromCsv = records.Select(r => r.ProductCode).ToList();
-            var duplicateInCsv = productCodesFromCsv.GroupBy(code => code).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
-
-            if (duplicateInCsv.Count != 0)
-            {
-                var duplicateCodesInCSV = string.Join(", ", duplicateInCsv);
-                _logger.Error($"Duplicate product codes found in CSV: {duplicateCodesInCSV}");
-                errorSummary["Duplicate product codes found in CSV"] = duplicateCodesInCSV;
-                isUnique = false;
-            }
-
-            var existingProductCodes = (await _productRepository.GetAllProductsAsync()).Select(p => p.Code).ToList();
-            var duplicateInDb = productCodesFromCsv.Intersect(existingProductCodes).ToList();
-
-            if (duplicateInDb.Count != 0)
-            {
-                var duplicateCodesInDb = string.Join(", ", duplicateInDb);
-                _logger.Error($"Duplicate product codes found in Database: {duplicateCodesInDb}");
-                errorSummary["Duplicate product codes found in Database"] = duplicateCodesInDb;
-                isUnique = false;
-            }
-
-            return isUnique;
+            .ToList();
         }
 
         private static string GenerateSummaryReport(int categoriesCount, int productsCount, int invalidRecordsCount, Dictionary<string, string> errorSummary)
@@ -165,7 +148,7 @@ namespace Catalog.Service
             var summary = $"Import Summary:\nNew Categories: {categoriesCount}\nNew Products: {productsCount}\nInvalid Records: {invalidRecordsCount}";
             if (errorSummary.Any())
             {
-                summary += "\nError Summary:";
+                summary += "\n\nError Summary:";
                 foreach (var error in errorSummary)
                 {
                     summary += $"\n{error.Key}: {error.Value}";

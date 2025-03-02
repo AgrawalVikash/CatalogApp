@@ -2,6 +2,7 @@
 using Catalog.Repository.Interface;
 using Catalog.Service;
 using Catalog.Service.Interface;
+using Catalog.Service.Utils;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +22,8 @@ class Program
             .ReadFrom.Configuration(configuration)
             .CreateLogger();
 
+        DirectoryHelper.EnsureDirectoryExists("logs");
+
         var host = Host.CreateDefaultBuilder()
                 .ConfigureServices((context, services) =>
                 {
@@ -29,6 +32,7 @@ class Program
                     services.AddScoped<ICategoryRepository, CategoryRepository>();
                     services.AddScoped<IProductRepository, ProductRepository>();
                     services.AddScoped<ICsvImportService, CsvImportService>();
+                    services.AddScoped<IDBTransactionManager, DBTransactionManager>();
                     services.AddSingleton<ILogger>(Log.Logger);
                 })
                 .Build();
@@ -40,6 +44,5 @@ class Program
         Console.Write("Enter CSV file path: ");
 
         await importService.ImportCsvAsync(Console.ReadLine());
-        Console.WriteLine("Data import complete.");
     }
 }
