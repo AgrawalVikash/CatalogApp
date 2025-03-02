@@ -1,6 +1,6 @@
-﻿using Catalog.Respository.Entities;
+﻿using Catalog.Repository.Entities;
 
-namespace Catalog.Respository.Interface
+namespace Catalog.Repository.Interface
 {
     public interface ICategoryRepository
     {

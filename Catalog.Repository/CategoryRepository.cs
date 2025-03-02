@@ -1,8 +1,8 @@
-﻿using Catalog.Respository.Entities;
-using Catalog.Respository.Interface;
+﻿using Catalog.Repository.Entities;
+using Catalog.Repository.Interface;
 using Microsoft.EntityFrameworkCore;
 
-namespace Catalog.Respository
+namespace Catalog.Repository
 {
     public class CategoryRepository : ICategoryRepository
     {

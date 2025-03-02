@@ -1,8 +1,8 @@
-﻿using Catalog.Respository.Entities;
+﻿using Catalog.Repository.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
-namespace Catalog.Respository
+namespace Catalog.Repository
 {
     public class CatalogDBContext : DbContext
     {

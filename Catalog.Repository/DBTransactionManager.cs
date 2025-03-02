@@ -1,7 +1,7 @@
-﻿using Catalog.Respository.Interface;
+﻿using Catalog.Repository.Interface;
 using Microsoft.EntityFrameworkCore.Storage;
 
-namespace Catalog.Respository
+namespace Catalog.Repository
 {
     public class DBTransactionManager : IDBTransactionManager
     {

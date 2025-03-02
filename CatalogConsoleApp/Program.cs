@@ -1,5 +1,5 @@
-﻿using Catalog.Respository;
-using Catalog.Respository.Interface;
+﻿using Catalog.Repository;
+using Catalog.Repository.Interface;
 using Catalog.Service;
 using Catalog.Service.Interface;
 using Microsoft.EntityFrameworkCore;

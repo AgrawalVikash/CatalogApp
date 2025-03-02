@@ -1,5 +1,5 @@
-﻿using Catalog.Respository.Entities;
-using Catalog.Respository.Interface;
+﻿using Catalog.Repository.Entities;
+using Catalog.Repository.Interface;
 using Catalog.Service.Interface;
 using Catalog.Service.Models;
 using Catalog.Service.Utils;

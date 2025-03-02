@@ -1,4 +1,4 @@
-﻿namespace Catalog.Respository.Interface
+﻿namespace Catalog.Repository.Interface
 {
     public interface IDBTransactionManager
     {
