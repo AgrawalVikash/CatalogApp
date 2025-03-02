@@ -9,7 +9,8 @@ namespace Catalog.Respository.Interface
 {
     public interface IProductRepository
     {
-        Task<IEnumerable<Product>> GetAllProductsAsync();
-        Task<int> AddProductsAsync(List<Product> products);
+        Task<IQueryable<Product>> GetAllProductsAsync();
+        Task AddProductsAsync(List<Product> products);
+        Task SaveChangesAsync();
     }
 }

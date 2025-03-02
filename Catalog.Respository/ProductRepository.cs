@@ -1,11 +1,6 @@
 ﻿using Catalog.Entities;
 using Catalog.Respository.Interface;
 using Microsoft.EntityFrameworkCore;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Catalog.Respository
 {
@@ -18,15 +13,19 @@ namespace Catalog.Respository
             _context = context;
         }
 
-        public async Task<IEnumerable<Product>> GetAllProductsAsync()
+        public Task<IQueryable<Product>> GetAllProductsAsync()
         {
-            return await _context.Products.AsNoTracking().ToListAsync();
+            return Task.FromResult(_context.Products.AsNoTracking());
         }
 
-        public async Task<int> AddProductsAsync(List<Product> products)
+        public async Task AddProductsAsync(List<Product> products)
         {
             await _context.Products.AddRangeAsync(products);
-            return await _context.SaveChangesAsync();
+        }
+
+        public async Task SaveChangesAsync()
+        {
+            await _context.SaveChangesAsync();
         }
     }
 }

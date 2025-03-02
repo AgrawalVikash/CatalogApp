@@ -11,6 +11,8 @@ namespace Catalog.Service
         private readonly ICategoryRepository _categoryRepository;
         private readonly IProductRepository _productRepository;
         private readonly ILogger _logger;
+        private readonly string skippedRecordsFile = "skipped_records.csv";
+        private readonly string summaryReportFile = "import_summary.log";
 
         public CsvImportService(ICategoryRepository categoryRepository, IProductRepository productRepository, ILogger logger)
         {
@@ -21,19 +23,36 @@ namespace Catalog.Service
 
         public async Task ImportCsvAsync(string filePath)
         {
-            bool hasErrors = false;
-            var errorSummary = new Dictionary<string, int>();
+            var errorSummary = new Dictionary<string, string>();
+            var categoriesCount = 0;
+            var productsCount = 0;
             try
             {
-                var validData = ReadAndValidateCsv(filePath, out List<string> skippedRecords, ref hasErrors, errorSummary);
-                
-                var newCategories = await GetNewCategoriesAsync(validData);
-                await _categoryRepository.AddCategoriesAsync(newCategories);
+                _logger.Information($"Starting CSV Import for file: {filePath}");
+                var validData = ReadAndValidateCsv(filePath, out List<string> skippedRecords, errorSummary);
 
-                var newProducts = await GetNewProductsAsync(validData);
-                await _productRepository.AddProductsAsync(newProducts);
+                if(ValidateUniqueProductCodes(validData, _productRepository, errorSummary, _logger))
+                {
+                    var newCategories = await GetNewCategoriesAsync(validData);
+                    categoriesCount = newCategories.Count;
+                    await _categoryRepository.AddCategoriesAsync(newCategories);
 
-                _logger.Information("CSV import completed successfully.");
+                    var newProducts = GetProducts(validData);
+                    productsCount = newProducts.Count;
+                    await _productRepository.AddProductsAsync(newProducts);
+
+                    await _categoryRepository.SaveChangesAsync();
+                    await _productRepository.SaveChangesAsync();
+
+                    _logger.Information($"CSV import completed successfully. Inserted {categoriesCount} new categories and {productsCount} new products");
+                }
+
+                var summaryReport = GenerateSummaryReport(categoriesCount, productsCount, skippedRecords.Count, errorSummary);
+                await File.WriteAllTextAsync(summaryReportFile, summaryReport);
+                if (skippedRecords.Count != 0)
+                {
+                    await File.WriteAllLinesAsync(skippedRecordsFile, skippedRecords);
+                }
             }
             catch (Exception ex)
             {
@@ -41,24 +60,35 @@ namespace Catalog.Service
             }
         }
 
-        private List<CsvRecord> ReadAndValidateCsv(string filePath, out List<string> skippedRecords, ref bool hasErrors, Dictionary<string, int> errorSummary)
+        private List<CsvRecord> ReadAndValidateCsv(string filePath, out List<string> skippedRecords, Dictionary<string, string> errorSummary)
         {
             var validData = new List<CsvRecord>();
             skippedRecords = new List<string>();
-            var lines = File.ReadAllLines(filePath);
 
-            foreach (var line in lines.Skip(1))
+            using (var reader = new StreamReader(filePath))
             {
-                var data = line.Split(',');
-                if (data.Length != 4)
+                // Skip the first line (header)
+                reader.ReadLineAsync();
+
+                while (!reader.EndOfStream)
                 {
-                    _logger.Warning($"Invalid line format: {line}");
-                    skippedRecords.Add(line);
-                    hasErrors = true;
-                    continue;
+                    string line = reader.ReadLine()!;
+                    var data = line.Split(',');
+                    if (data.Length != 4)
+                    {
+                        _logger.Warning($"Invalid line format: {line}");
+                        skippedRecords.Add(line);
+                        continue;
+                    }
+                    validData.Add(new CsvRecord { ProductName = data[0].Trim(), ProductCode = data[1].Trim().ToUpper(), CategoryName = data[2].Trim(), CategoryCode = data[3].Trim().ToUpper() });
                 }
-                validData.Add(new CsvRecord { ProductName = data[0].Trim(), ProductCode = data[1].Trim(), CategoryName = data[2].Trim(), CategoryCode = data[3].Trim() });
             }
+
+            if (skippedRecords.Count != 0)
+            {
+                errorSummary["Invalid Format"] = skippedRecords.Count.ToString();
+            }
+
             return validData;
         }
 
@@ -77,19 +107,53 @@ namespace Catalog.Service
             return newCategories;
         }
 
-        private async Task<List<Product>> GetNewProductsAsync(List<CsvRecord> validData)
+        private static List<Product> GetProducts(IEnumerable<CsvRecord> validData)
         {
-            var uniqueProducts = validData
+            return validData
                     .Select(x => new Product { Name = x.ProductName, Code = x.ProductCode, CreationDate = DateTime.UtcNow })
                     .DistinctBy(c => c.Code)
                     .ToList();
+        }
 
-            var existingProducts = await _productRepository.GetAllProductsAsync();
-            var newProdcuts = uniqueProducts
-                    .Where(c => !existingProducts.Any(ec => ec.Code == c.Code))
-                    .ToList();
+        private static bool ValidateUniqueProductCodes(IEnumerable<CsvRecord> records, IProductRepository _productRepository, Dictionary<string, string> errorSummary, ILogger _logger)
+        {
+            var productCodesFromCsv = records.Select(r => r.ProductCode).ToList();
+            var duplicateInCsv = productCodesFromCsv.GroupBy(code => code).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
 
-            return newProdcuts;
+            if (duplicateInCsv.Count != 0)
+            {
+                var duplicateCodesInCSV = string.Join(", ", duplicateInCsv);
+                _logger.Error($"Duplicate product codes found in CSV: {duplicateCodesInCSV}");
+                errorSummary["Duplicate product codes found in CSV"] = duplicateCodesInCSV;
+                return false;
+            }
+
+            var existingProductCodes = _productRepository.GetAllProductsAsync().Result.Select(p => p.Code).ToList();
+            var duplicateInDb = productCodesFromCsv.Intersect(existingProductCodes).ToList();
+
+            if (duplicateInDb.Count != 0)
+            {
+                var duplicateCodesInDb = string.Join(", ", duplicateInDb);
+                _logger.Error($"Duplicate product codes found in Database: {string.Join(", ", duplicateCodesInDb)}");
+                errorSummary["Duplicate product codes found in Database"] = duplicateCodesInDb;
+                return false;
+            }
+
+            return true;
+        }
+
+        private static string GenerateSummaryReport(int newCategories, int newProducts, int skippedRecords, Dictionary<string, string> errorSummary)
+        {
+            var summary = $"Import Summary:\nNew Categories: {newCategories}\nNew Products: {newProducts}\nSkipped Records: {skippedRecords}";
+            if (errorSummary.Any())
+            {
+                summary += "\nError Summary:";
+                foreach (var error in errorSummary)
+                {
+                    summary += $"\n{error.Key}: {error.Value}";
+                }
+            }
+            return summary;
         }
     }
 }
