@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace Catalog.Entities
+namespace Catalog.Respository.Entities
 {
     public class Category
     {

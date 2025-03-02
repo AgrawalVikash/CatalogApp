@@ -1,38 +1,52 @@
-﻿using Catalog.Entities;
+﻿using Catalog.Respository.Entities;
 using Catalog.Respository.Interface;
 using Catalog.Service.Interface;
 using Catalog.Service.Models;
+using Catalog.Service.Utils;
+using Microsoft.Extensions.Configuration;
 using Serilog;
 
 namespace Catalog.Service
 {
     public class CsvImportService : ICsvImportService
     {
+        private readonly IDBTransactionManager _dbTransactionManager;
         private readonly ICategoryRepository _categoryRepository;
         private readonly IProductRepository _productRepository;
         private readonly ILogger _logger;
-        private readonly string skippedRecordsFile = "skipped_records.csv";
-        private readonly string summaryReportFile = "import_summary.log";
+        private readonly string _invalidRecordsFile = "invalid_records.csv";
+        private readonly string _summaryReportFile = "import_summary.log";
 
-        public CsvImportService(ICategoryRepository categoryRepository, IProductRepository productRepository, ILogger logger)
+        public CsvImportService(IDBTransactionManager dbTransactionManager, ICategoryRepository categoryRepository, IProductRepository productRepository, ILogger logger, IConfiguration configuration)
         {
+            _dbTransactionManager = dbTransactionManager;
             _categoryRepository = categoryRepository;
             _productRepository = productRepository;
             _logger = logger;
+            var fileSettings = configuration.GetSection("FileSettings");
+            _invalidRecordsFile = fileSettings["InvalidRecordsFile"] ?? "invalid_records.csv";
+            _summaryReportFile = fileSettings["SummaryReportFile"] ?? "import_summary.log";
         }
 
-        public async Task ImportCsvAsync(string filePath)
+        public async Task ImportCsvAsync(string? filePath)
         {
             var errorSummary = new Dictionary<string, string>();
             var categoriesCount = 0;
             var productsCount = 0;
             try
             {
-                _logger.Information($"Starting CSV Import for file: {filePath}");
-                var validData = ReadAndValidateCsv(filePath, out List<string> skippedRecords, errorSummary);
-
-                if(ValidateUniqueProductCodes(validData, _productRepository, errorSummary, _logger))
+                if(!CsvValidator.ValidateFile(filePath))
                 {
+                    return;
+                }
+
+                _logger.Information($"Starting CSV Import for file: {filePath}");
+                var validData = ReadAndValidateCsv(filePath!, out List<string> invalidRecords, errorSummary);
+
+                if(await ValidateUniqueProductCodes(validData, errorSummary))
+                {
+                    await _dbTransactionManager.BeginTransactionAsync();
+
                     var newCategories = await GetNewCategoriesAsync(validData);
                     categoriesCount = newCategories.Count;
                     await _categoryRepository.AddCategoriesAsync(newCategories);
@@ -44,26 +58,29 @@ namespace Catalog.Service
                     await _categoryRepository.SaveChangesAsync();
                     await _productRepository.SaveChangesAsync();
 
+                    await _dbTransactionManager.CommitTransactionAsync();
+
                     _logger.Information($"CSV import completed successfully. Inserted {categoriesCount} new categories and {productsCount} new products");
                 }
 
-                var summaryReport = GenerateSummaryReport(categoriesCount, productsCount, skippedRecords.Count, errorSummary);
-                await File.WriteAllTextAsync(summaryReportFile, summaryReport);
-                if (skippedRecords.Count != 0)
+                var summaryReport = GenerateSummaryReport(categoriesCount, productsCount, invalidRecords.Count, errorSummary);
+                await File.WriteAllTextAsync(_summaryReportFile, summaryReport);
+                if (invalidRecords.Count != 0)
                 {
-                    await File.WriteAllLinesAsync(skippedRecordsFile, skippedRecords);
+                    await File.WriteAllLinesAsync(_invalidRecordsFile, invalidRecords);
                 }
             }
             catch (Exception ex)
             {
+                await _dbTransactionManager.RollbackTransactionAsync();
                 _logger.Error($"Error occurred during CSV import: {ex.Message}");
             }
         }
 
-        private List<CsvRecord> ReadAndValidateCsv(string filePath, out List<string> skippedRecords, Dictionary<string, string> errorSummary)
+        private List<CsvRecord> ReadAndValidateCsv(string filePath, out List<string> invalidRecords, Dictionary<string, string> errorSummary)
         {
             var validData = new List<CsvRecord>();
-            skippedRecords = new List<string>();
+            invalidRecords = new List<string>();
 
             using (var reader = new StreamReader(filePath))
             {
@@ -77,16 +94,16 @@ namespace Catalog.Service
                     if (data.Length != 4)
                     {
                         _logger.Warning($"Invalid line format: {line}");
-                        skippedRecords.Add(line);
+                        invalidRecords.Add(line);
                         continue;
                     }
                     validData.Add(new CsvRecord { ProductName = data[0].Trim(), ProductCode = data[1].Trim().ToUpper(), CategoryName = data[2].Trim(), CategoryCode = data[3].Trim().ToUpper() });
                 }
             }
 
-            if (skippedRecords.Count != 0)
+            if (invalidRecords.Count != 0)
             {
-                errorSummary["Invalid Format"] = skippedRecords.Count.ToString();
+                errorSummary["Invalid Format"] = invalidRecords.Count.ToString();
             }
 
             return validData;
@@ -115,8 +132,9 @@ namespace Catalog.Service
                     .ToList();
         }
 
-        private static bool ValidateUniqueProductCodes(IEnumerable<CsvRecord> records, IProductRepository _productRepository, Dictionary<string, string> errorSummary, ILogger _logger)
+        private async Task<bool> ValidateUniqueProductCodes(IEnumerable<CsvRecord> records, Dictionary<string, string> errorSummary)
         {
+            var isUnique = true;
             var productCodesFromCsv = records.Select(r => r.ProductCode).ToList();
             var duplicateInCsv = productCodesFromCsv.GroupBy(code => code).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
 
@@ -125,26 +143,26 @@ namespace Catalog.Service
                 var duplicateCodesInCSV = string.Join(", ", duplicateInCsv);
                 _logger.Error($"Duplicate product codes found in CSV: {duplicateCodesInCSV}");
                 errorSummary["Duplicate product codes found in CSV"] = duplicateCodesInCSV;
-                return false;
+                isUnique = false;
             }
 
-            var existingProductCodes = _productRepository.GetAllProductsAsync().Result.Select(p => p.Code).ToList();
+            var existingProductCodes = (await _productRepository.GetAllProductsAsync()).Select(p => p.Code).ToList();
             var duplicateInDb = productCodesFromCsv.Intersect(existingProductCodes).ToList();
 
             if (duplicateInDb.Count != 0)
             {
                 var duplicateCodesInDb = string.Join(", ", duplicateInDb);
-                _logger.Error($"Duplicate product codes found in Database: {string.Join(", ", duplicateCodesInDb)}");
+                _logger.Error($"Duplicate product codes found in Database: {duplicateCodesInDb}");
                 errorSummary["Duplicate product codes found in Database"] = duplicateCodesInDb;
-                return false;
+                isUnique = false;
             }
 
-            return true;
+            return isUnique;
         }
 
-        private static string GenerateSummaryReport(int newCategories, int newProducts, int skippedRecords, Dictionary<string, string> errorSummary)
+        private static string GenerateSummaryReport(int categoriesCount, int productsCount, int invalidRecordsCount, Dictionary<string, string> errorSummary)
         {
-            var summary = $"Import Summary:\nNew Categories: {newCategories}\nNew Products: {newProducts}\nSkipped Records: {skippedRecords}";
+            var summary = $"Import Summary:\nNew Categories: {categoriesCount}\nNew Products: {productsCount}\nInvalid Records: {invalidRecordsCount}";
             if (errorSummary.Any())
             {
                 summary += "\nError Summary:";

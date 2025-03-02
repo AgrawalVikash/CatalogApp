@@ -1,4 +1,4 @@
-﻿using Catalog.Entities;
+﻿using Catalog.Respository.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
@@ -6,6 +6,7 @@ namespace Catalog.Respository
 {
     public class CatalogDBContext : DbContext
     {
+        public CatalogDBContext(DbContextOptions<CatalogDBContext> options) : base(options) { }
         public DbSet<Category> Categories { get; set; }
         public DbSet<Product> Products { get; set; }
 

@@ -29,7 +29,7 @@ class Program
                     services.AddScoped<ICategoryRepository, CategoryRepository>();
                     services.AddScoped<IProductRepository, ProductRepository>();
                     services.AddScoped<ICsvImportService, CsvImportService>();
-                    services.AddSingleton(Log.Logger);
+                    services.AddSingleton<ILogger>(Log.Logger);
                 })
                 .Build();
 
@@ -38,14 +38,8 @@ class Program
         var importService = services.GetRequiredService<ICsvImportService>();
 
         Console.Write("Enter CSV file path: ");
-        var filePath = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-        {
-            Console.WriteLine("Invalid file path. Exiting.");
-            return;
-        }
 
-        await importService.ImportCsvAsync(filePath);
+        await importService.ImportCsvAsync(Console.ReadLine());
         Console.WriteLine("Data import complete.");
     }
 }

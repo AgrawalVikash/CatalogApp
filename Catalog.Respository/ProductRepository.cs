@@ -1,4 +1,4 @@
-﻿using Catalog.Entities;
+﻿using Catalog.Respository.Entities;
 using Catalog.Respository.Interface;
 using Microsoft.EntityFrameworkCore;
 
