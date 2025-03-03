@@ -35,7 +35,7 @@ namespace Catalog.Service
             var productsCount = 0;
             try
             {
-                if(!CsvValidator.ValidateFile(filePath))
+                if (!CsvValidator.ValidateFile(filePath))
                 {
                     return;
                 }
@@ -43,11 +43,11 @@ namespace Catalog.Service
                 _logger.Information($"Starting CSV Import for file: {filePath}");
                 var (validData, invalidRecords) = await ReadAndValidateCsvAsync(filePath!, errorSummary);
 
-                if(await CsvValidator.ValidateUniqueProductCodes(validData, _productRepository, errorSummary))
+                if (await CsvValidator.ValidateUniqueProductCodes(validData, _productRepository, errorSummary))
                 {
                     var newCategories = await GetNewCategoriesAsync(validData);
                     categoriesCount = newCategories.Count;
-                    
+
                     var newProducts = GetProducts(validData);
                     productsCount = newProducts.Count;
 
@@ -69,7 +69,7 @@ namespace Catalog.Service
             }
         }
 
-        private async Task InsertCSVData(List<Category> categories, List<Product> products) 
+        private async Task InsertCSVData(List<Category> categories, List<Product> products)
         {
             try
             {
